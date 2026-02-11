@@ -28,8 +28,8 @@ def _get_user_long_key(group_id: str, user_id: str) -> str:
 
 
 class UserService:
-    def __init__(self):
-        self.db = Database()
+    def __init__(self, db: Database = Database()):
+        self.db = db
 
     async def handle_checkin(self, group_id: str, user_id: str) -> str:
         today = date.today()
@@ -45,15 +45,30 @@ class UserService:
             total_days = 1
             streak_days = 1
         else:
-            last_date = record['last_checkin_date']
+            last_date_str = record['last_checkin_date']
+
+            # --- 安全解析 last_checkin_date ---
+            last_date = None
+            if last_date_str:
+                # 过滤掉 MySQL 的无效日期 '0000-00-00'
+                if last_date_str != '0000-00-00':
+                    try:
+                        last_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+                    except (ValueError, TypeError):
+                        last_date = None  # 解析失败也视为未签到
+
             total_days = record['total_days'] + 1
 
-            if last_date == yesterday:
+            if last_date is None:
+                streak_days = 1
+            elif last_date == yesterday:
                 streak_days = record['streak_days'] + 1
             elif last_date < yesterday:
                 streak_days = 1
             else:
+                # last_date == today（重复签到）或未来日期（异常）
                 streak_days = record['streak_days']
+                total_days = record['total_days']  # 不增加总天数
 
         # 更新数据库（异步）
         success = await self.db.add_or_update_checkin(
@@ -107,8 +122,7 @@ class UserService:
 
         return "\n".join(lines) if lines else "暂无数据"
 
-    @staticmethod
-    async def queryUserLongMemory(groupId: str, userId: str) -> str:
+    async def queryUserLongMemory(self, groupId: str, userId: str) -> str:
         _log.info(f"查询用户 {userId} 的长期记忆")
         key = _get_user_long_key(groupId, userId)
         memory = await _redis_client.get(key)
@@ -118,18 +132,16 @@ class UserService:
         else:
             return "暂无关于该用户的长期记忆。"
 
-    @staticmethod
-    async def clearUserLongMemory(groupId: str, userId: str) -> str:
+    async def clearUserLongMemory(self, groupId: str, userId: str) -> str:
         _log.info(f"清除用户 {userId} 在群组 {groupId} 的长期记忆")
         key = _get_user_long_key(groupId, userId)
         deleted = await _redis_client.delete(key)
         if deleted:
-            return f"已成功清除用户 {userId} 在上下文 {groupId} 中的长期记忆。"
+            return f"已成功清除用户在上下文中的长期记忆。"
         else:
-            return f"未找到用户 {userId} 在上下文 {groupId} 的长期记忆，无需清除。"
+            return f"未找到用户在上下文的长期记忆，无需清除。"
 
-    @staticmethod
-    async def updateUserLongMemory(groupId: str, userId: str, update_instruction: str) -> str:
+    async def updateUserLongMemory(self, groupId: str, userId: str, update_instruction: str) -> str:
         key = _get_user_long_key(groupId, userId)
         current_memory = await _redis_client.get(key)
         current_memory_str = current_memory.decode("utf-8") if current_memory else ""
@@ -163,34 +175,30 @@ class UserService:
             _log.error(f"更新用户画像失败 - group:{groupId} user:{userId}, error: {e}")
             return "更新失败，请稍后再试。"
 
-    @staticmethod
-    async def getSystemPromptForUser(groupId: str, userId: str) -> str:
+    async def getSystemPromptForUser(self, groupId: str, userId: str) -> str:
         cache_key = f"{Constant.REDIS_USER_SYSTEM_PROMPT_KEY}:{groupId}:{userId}"
         cached = await _redis_client.get(cache_key)
         if cached:
             return cached.decode("utf-8")
 
-        db = Database()
-        prompt_from_db = await db.get_user_system_prompt(userId, groupId)
+        prompt_from_db = await self.db.get_user_system_prompt(userId, groupId)
         if prompt_from_db:
             await _redis_client.setex(cache_key, 3600, prompt_from_db)
             return prompt_from_db
         else:
             return Constant.CHAT_PERSONA_PROMPT
 
-    @staticmethod
-    async def updateUserSystemPrompt(groupId: str, userId: str, prompt_instruction: str) -> str:
+    async def updateUserSystemPrompt(self, groupId: str, userId: str, prompt_instruction: str) -> str:
         cost = Constant.USER_SYSTEM_PROMPT_COST
-        db = Database()
 
-        current_points = await db.get_user_points(userId, groupId)
+        current_points = await self.db.get_user_points(userId, groupId)
         if current_points is None or current_points < cost:
             return f"积分不足！设置系统提示词需要 {cost} 积分。"
 
-        if not await db.add_user_points(userId, groupId, -cost):
+        if not await self.db.add_user_points(userId, groupId, -cost):
             return "扣除积分失败，请稍后再试。"
 
-        success = await db.set_user_system_prompt(userId, groupId, prompt_instruction)
+        success = await self.db.set_user_system_prompt(userId, groupId, prompt_instruction)
         if not success:
             return f"保存失败，但已扣除 {cost} 积分（请联系管理员）。"
 
@@ -199,7 +207,6 @@ class UserService:
 
         return f"个性化系统提示词已设置成功！已扣除 {cost} 积分。"
 
-    @staticmethod
     async def handle_help() -> str:
         """帮助信息是静态的，可保持同步，但为统一接口也声明为 async"""
         return Constant.HELP

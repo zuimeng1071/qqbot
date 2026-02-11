@@ -7,7 +7,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.redis import AsyncRedisSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
 from service.agentUtils.saveMemory import SaveMemory
 from service.agentUtils.tools import (
@@ -38,6 +38,8 @@ class ChatService:
         # 1. 创建 Redis 客户端并初始化 Checkpointer
         redis_client = redis.from_url(Constant.REDIS_CONN_STRING)
         checkpointer = AsyncRedisSaver(redis_client=redis_client)
+
+        await checkpointer.asetup()
 
         # 2. 初始化模型
         chat_llm = ChatOpenAI(
@@ -135,10 +137,12 @@ class ChatService:
 if __name__ == "__main__":
     import asyncio
 
+
     # 模拟同步输入（不阻塞 event loop）
     async def async_input(prompt: str) -> str:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, input, prompt)
+
 
     async def run_chat():
         chat = ChatService()
@@ -155,6 +159,7 @@ if __name__ == "__main__":
                 break
             except Exception as e:
                 print("❌ 错误:", e)
+
 
     # 启动异步主循环
     asyncio.run(run_chat())

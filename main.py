@@ -9,8 +9,12 @@ from botpy.message import GroupMessage, C2CMessage
 from service.user_service import UserService
 from service.chat_service import ChatService
 
+from mapper.database import Database
+
 # 全局服务实例
-user_service = UserService()
+
+db = Database()  # 直接在全局创建数据库实例，供服务使用
+user_service = UserService(db)
 chatService = ChatService()
 
 # 预编译正则（提升高频场景性能）
@@ -25,6 +29,7 @@ _HELP_PATTERN = re.compile(r'\s*(帮助|help|菜单|/帮助)\s*', re.IGNORECASE)
 
 _log = logging.get_logger()
 config = read(os.path.join(os.path.dirname(__file__), "config.yaml"))
+
 
 
 class MyClient(botpy.Client):
@@ -57,6 +62,14 @@ class MyClient(botpy.Client):
         :param reply_func: 异步回复函数，如 lambda r: self.reply_group(...)
         """
         msg = raw_msg.strip()
+
+        try:
+            await db.init_user(uid, gid)
+        except Exception as e:
+            _log.error(f"初始化用户失败 (gid={gid}, uid={uid}): {e}", exc_info=True)
+            await reply_func("系统初始化失败，请稍后再试。")
+            return
+
 
         try:
             # 签到
@@ -122,7 +135,7 @@ class MyClient(botpy.Client):
 
         except Exception as e:
             _log.error(f"处理用户消息出错 (gid={gid}, uid={uid}): {e}", exc_info=True)
-            await reply_func("抱歉，系统出错了，请联系管理员：2450907441。")
+            await reply_func("抱歉，系统出错了。")
 
     async def on_group_at_message_create(self, message: GroupMessage):
         gid = message.group_openid

@@ -38,6 +38,37 @@ class Database:
             self._pool.close()
             await self._pool.wait_closed()
 
+    from datetime import date
+
+    async def init_user(self, user_id: str, group_id: str):
+        """
+        初始化用户在三张表中的记录（仅当记录不存在时插入默认值）
+        - user_status: is_reusable = True
+        - user_points: points = 0
+        - checkin_records: total_days=0, streak_days=0, last_checkin_date=NULL
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                # 初始化 user_status
+                await cursor.execute("""
+                    INSERT IGNORE INTO user_status (user_id, group_id, is_reusable)
+                    VALUES (%s, %s, %s)
+                """, (user_id, group_id, 1))
+
+                # 初始化 user_points
+                await cursor.execute("""
+                    INSERT IGNORE INTO user_points (user_id, group_id, points)
+                    VALUES (%s, %s, %s)
+                """, (user_id, group_id, 0))
+
+                # 初始化 checkin_records
+                await cursor.execute("""
+                    INSERT IGNORE INTO checkin_records 
+                        (user_id, group_id, last_checkin_date, total_days, streak_days)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (user_id, group_id, None, 0, 0))
+
     # ========================
     # Table: checkin_records
     # ========================
@@ -127,31 +158,6 @@ class Database:
     # Table: user_points
     # ========================
 
-    async def init_user_points(self, user_id: str, group_id: str, points: int = 0):
-        """初始化用户状态和积分（安全方式）"""
-        pool = await self._get_pool()
-        async with pool.acquire() as conn:
-            try:
-                async with conn.cursor() as cursor:
-                    # 1. 先确保 user_status 有记录（幂等操作）
-                    sql_status = """
-                        INSERT INTO user_status (user_id, group_id, is_reusable)
-                        VALUES (%s, %s, 1)
-                        ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
-                    """
-                    await cursor.execute(sql_status, (user_id, group_id))
-
-                    # 2. 再初始化 user_points（如果不存在）
-                    sql_points = """
-                        INSERT INTO user_points (user_id, group_id, points)
-                        VALUES (%s, %s, %s)
-                        ON DUPLICATE KEY UPDATE points = points
-                    """
-                    await cursor.execute(sql_points, (user_id, group_id, points))
-            except Exception as e:
-                await conn.rollback()
-                raise  # 让上层捕获并处理
-
     async def get_user_points(self, user_id: str, group_id: str):
         """获取用户当前积分"""
         pool = await self._get_pool()
@@ -229,38 +235,3 @@ class Database:
         except Exception as e:
             print(f"Error saving system prompt: {e}")
             return False
-
-
-# ========================
-# 示例：如何正确使用（需在 async 环境中）
-# ========================
-if __name__ == "__main__":
-    import asyncio
-
-
-    async def main():
-        db = Database()
-        try:
-            # 获取积分
-            points = await db.get_user_points("123456", "987654")
-            if points is None:
-                print("用户未初始化")
-                # 初始化用户
-                await db.create_or_update_user_status("123456", "987654")
-                print("用户已初始化")
-            else:
-                print(f"当前积分: {points}")
-
-            print(f"当前积分: {await db.get_user_points('123456', '987654')}")
-
-            # 加 10 分（注意：应传整数，原代码 10.9 是错误的）
-            await db.add_user_points("123456", "987654", 10)  # 改为整数
-            print(f"已增加 10 分，当前积分: {await db.get_user_points('123456', '987654')}")
-
-            # 设置不可用
-            await db.update_user_status("123456", "987654", is_reusable=False)
-        finally:
-            await db.close()
-
-
-    asyncio.run(main())
